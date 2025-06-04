@@ -1,0 +1,54 @@
+
+
+common_cols = set(transit_dfs[next(iter(transit_dfs))].columns)
+for df in transit_dfs.values():
+     common_cols &= set(df.columns)
+
+for file_name in transit_dfs:
+   transit_dfs[file_name] = transit_dfs[file_name][list(common_cols)]
+   all_transit = pd.concat(transit_dfs.values(), ignore_index=True)
+   transit_gdf = gpd.GeoDataFrame(
+   all_transit,
+   geometry=gpd.points_from_xy(all_transit["stop_lon"], all_transit["stop_lat"]),
+   crs="EPSG:4326"
+   )
+   # Load zoning and classify
+   zones = gpd.read_file("Zoning_Base_SD_shapefile/Zoning_Base_SD.shp")
+ 
+def classify_zone(z):
+       if z.startswith("RS") or z.startswith("RM") or z.startswith("RX"):
+            return "Residential"
+       elif z.startswith("CO") or z.startswith("CN") or z.startswith("CC"):
+            return "Commercial"
+       elif z.startswith ("IP") or z.startswith("IL") or z.startswith("IH"):
+            return "Industrial"
+       elif z.startswith("AG") or z.startswith("AR"):
+           return "Agricultural"
+       else:
+           return "Other"
+  
+   zones["zone_type"] = zones["ZONE_NAME"].apply(classify_zone)
+   neighborhoods = gpd.read_file("Neighborhoods.shp")
+   if neighborhoods.crs != zones.crs:
+       zones = zones.to_crs(neighborhoods.crs)
+   
+   zone_in_neighborhoods = gpd.sjoin(zones,neighborhoods, how="inner", predicate="intersects")
+   zone_counts = (
+       zone_in_neighborhoods.groupby(["neighborhood_name","zone_type"]).size().unstack(fill_value=0).reset_index()
+   )
+   if transit_gdf.crs != neighborhoods.crs:
+      transit_gdf = transit_gdf.to_crs(neighborhoods.crs)
+   
+   stops_in_neighborhoods = gpd.sjoin(transit_gdf, neighborhoods, how="inner", predicate="within")
+   stop_counts = (
+      stops_in_neighborhoods.groupby("neighborhood_name").size().reset_index(name="stop_count")
+   )
+   neighborhood_stats = zone_counts.merge(stop_counts, on="neighborhood_name", how="left")
+   neighborhood_stats["stop_count"].fillna(0, inplace=True)
+   
+   melted = neighborhood_stats.melt(
+       id_vars=["neighborhood_name","stop_count"],
+       value_vars=["Residential","Commercial","Industrial","Agricultural", "Other"],
+       var_name= "zone_type",
+       value_name="zone_count"
+   )
